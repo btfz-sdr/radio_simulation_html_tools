@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>AoD 扫描与角度实时换算演示</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1a202c; color: #e2e8f0; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+        .container { background: #2d3748; padding: 25px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); width: 900px; display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
+        .main-view { display: flex; flex-direction: column; gap: 15px; }
+        canvas { background: #000; border-radius: 8px; width: 100%; height: 260px; border: 1px solid #4a5568; }
+        .instrument-panel { background: #1a202c; border-radius: 12px; padding: 15px; display: flex; flex-direction: column; align-items: center; border: 2px solid #4299e1; }
+        .dial { width: 200px; height: 200px; border-radius: 50%; border: 4px solid #4a5568; position: relative; margin: 10px; background: radial-gradient(circle, #2d3748 0%, #1a202c 100%); }
+        .needle { position: absolute; width: 4px; height: 90px; background: #f56565; left: 98px; bottom: 100px; transform-origin: bottom center; transition: transform 0.1s; }
+        .dial-label { position: absolute; width: 100%; text-align: center; bottom: -30px; font-weight: bold; color: #4299e1; }
+        .sync-indicator { width: 15px; height: 15px; border-radius: 50%; background: #2d3748; margin-bottom: 10px; }
+        .sync-active { background: #48bb78; box-shadow: 0 0 10px #48bb78; }
+        .controls { grid-column: span 2; display: flex; justify-content: space-between; align-items: center; background: #1a202c; padding: 15px; border-radius: 8px; }
+        .data-card { font-family: monospace; font-size: 14px; background: #000; padding: 10px; border-radius: 4px; color: #48bb78; }
+        button { padding: 12px 24px; cursor: pointer; border-radius: 6px; border: none; background: #4299e1; color: white; font-weight: bold; transition: 0.3s; }
+        button:hover { background: #3182ce; }
+        .highlight { color: #ecc94b; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<h2 style="margin-bottom: 20px;">AoD 扫描测向系统 (模拟 B210 差分测量)</h2>
+
+<div class="container">
+    <div class="main-view">
+        <label>实时射频信号 (RF Envelope)</label>
+        <canvas id="waveCanvas"></canvas>
+        <div class="data-card" id="telemetry">
+            等待同步信号...
+        </div>
+    </div>
+
+    <div class="instrument-panel">
+        <div id="syncLamp" class="sync-indicator"></div>
+        <div style="font-size: 12px; margin-bottom: 10px;">SYNC PULSE (同步脉冲)</div>
+        <div class="dial">
+            <div id="needle" class="needle"></div>
+            <div class="dial-label">测得 AoD 角度</div>
+        </div>
+        <div id="angleDisplay" style="font-size: 24px; font-weight: bold; margin-top: 40px; color: #f56565;">0.0°</div>
+    </div>
+
+    <div class="controls">
+        <div>
+            <button id="scanBtn">开始扫描 (0° → 360°)</button>
+            <span style="margin-left: 20px; font-size: 14px;">模拟接收机位置偏移:</span>
+            <input type="range" id="offsetSlider" min="-180" max="180" value="0" style="vertical-align: middle;">
+        </div>
+        <div style="text-align: right; font-size: 13px; color: #a0aec0;">
+            扫描周期: <span class="highlight">100ms</span><br>
+            计算原理: <span class="highlight">ΔT(Null) - T(Sync)</span>
+        </div>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('waveCanvas');
+    const ctx = canvas.getContext('2d');
+    const scanBtn = document.getElementById('scanBtn');
+    const needle = document.getElementById('needle');
+    const angleDisplay = document.getElementById('angleDisplay');
+    const syncLamp = document.getElementById('syncLamp');
+    const telemetry = document.getElementById('telemetry');
+    const offsetSlider = document.getElementById('offsetSlider');
+
+    let phase = 0; // 发射端当前相位 (0-360)
+    let isScanning = false;
+    let time = 0;
+    let lastNullPhase = 0;
+    let virtualPosOffset = 0; // 模拟接收机在空间中的位置导致的相位偏移
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const centerY = canvas.height / 2;
+        const baseAmp = 60;
+        
+        // 1. 计算当前合成幅度 (包含同步脉冲逻辑)
+        // 模拟同步脉冲：当扫描回到0度附近，幅度瞬间加倍
+        let syncActive = phase < 5;
+        let currentSyncAmp = syncActive ? 2.0 : 1.0;
+        
+        // 2. 模拟空间干涉：接收端看到的相位差 = 发射相位 + 空间位置偏移
+        let rxPhaseDiff = (phase + virtualPosOffset) * Math.PI / 180;
+        
+        // 计算合成波包络高度 (用于绘图和找零点)
+        // Y = |sin(wt) + sin(wt + phi)| = 2*cos(phi/2)
+        let envelope = Math.abs(2 * Math.cos(rxPhaseDiff / 2));
+        
+        // 3. 绘制波形 (模拟示波器观察到的包络)
+        ctx.beginPath();
+        ctx.strokeStyle = '#4299e1';
+        ctx.lineWidth = 2;
+        for (let x = 0; x < canvas.width; x++) {
+            const carrier = Math.sin(x * 0.1 + time);
+            const y = centerY + carrier * baseAmp * envelope * currentSyncAmp;
+            if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        // 4. AoD 逻辑计算
+        if (isScanning) {
+            // 更新同步灯
+            syncLamp.className = syncActive ? "sync-indicator sync-active" : "sync-indicator";
+            
+            // 寻找静默点 (Null Point): 当 rxPhaseDiff 接近 180度 (PI) 时
+            // 即 (phase + virtualPosOffset) % 360 接近 180
+            let effectivePhase = (phase + virtualPosOffset + 360) % 360;
+            
+            // 测向仪指向：实际上我们要找的是“零点时刻”对应的发送相位
+            // 假设我们校准过：当 effectivePhase = 180 时，物理角度是 0
+            let calculatedAoD = (180 - effectivePhase + 360) % 360;
+            
+            // 更新仪表盘
+            needle.style.transform = `rotate(${calculatedAoD}deg)`;
+            angleDisplay.innerText = calculatedAoD.toFixed(1) + "°";
+            
+            telemetry.innerHTML = `[TELEMETRY] <br>
+                扫频相位: ${phase}° <br>
+                空间补偿: ${virtualPosOffset}° <br>
+                同步状态: ${syncActive ? 'SYNCING...' : 'TRACKING'} <br>
+                测得角度: <span style="color:#ecc94b">${calculatedAoD.toFixed(2)}°</span>`;
+
+            phase = (phase + 2) % 360; // 模拟步进
+        }
+
+        time -= 0.2;
+        requestAnimationFrame(draw);
+    }
+
+    scanBtn.onclick = () => {
+        isScanning = !isScanning;
+        scanBtn.innerText = isScanning ? "停止系统" : "开始扫描 (0° → 360°)";
+    };
+
+    offsetSlider.oninput = () => {
+        virtualPosOffset = parseInt(offsetSlider.value);
+    };
+
+    canvas.width = canvas.offsetWidth;
+    canvas.height = canvas.offsetHeight;
+    draw();
+</script>
+</body>
+</html>
