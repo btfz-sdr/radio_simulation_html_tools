@@ -2,147 +2,309 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>AoD 扫描与角度实时换算演示</title>
+    <title>AoD 全链路信号深度模拟器</title>
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1a202c; color: #e2e8f0; display: flex; flex-direction: column; align-items: center; padding: 20px; }
-        .container { background: #2d3748; padding: 25px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); width: 900px; display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
-        .main-view { display: flex; flex-direction: column; gap: 15px; }
-        canvas { background: #000; border-radius: 8px; width: 100%; height: 260px; border: 1px solid #4a5568; }
-        .instrument-panel { background: #1a202c; border-radius: 12px; padding: 15px; display: flex; flex-direction: column; align-items: center; border: 2px solid #4299e1; }
-        .dial { width: 200px; height: 200px; border-radius: 50%; border: 4px solid #4a5568; position: relative; margin: 10px; background: radial-gradient(circle, #2d3748 0%, #1a202c 100%); }
-        .needle { position: absolute; width: 4px; height: 90px; background: #f56565; left: 98px; bottom: 100px; transform-origin: bottom center; transition: transform 0.1s; }
-        .dial-label { position: absolute; width: 100%; text-align: center; bottom: -30px; font-weight: bold; color: #4299e1; }
-        .sync-indicator { width: 15px; height: 15px; border-radius: 50%; background: #2d3748; margin-bottom: 10px; }
-        .sync-active { background: #48bb78; box-shadow: 0 0 10px #48bb78; }
-        .controls { grid-column: span 2; display: flex; justify-content: space-between; align-items: center; background: #1a202c; padding: 15px; border-radius: 8px; }
-        .data-card { font-family: monospace; font-size: 14px; background: #000; padding: 10px; border-radius: 4px; color: #48bb78; }
-        button { padding: 12px 24px; cursor: pointer; border-radius: 6px; border: none; background: #4299e1; color: white; font-weight: bold; transition: 0.3s; }
-        button:hover { background: #3182ce; }
-        .highlight { color: #ecc94b; font-weight: bold; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0f172a; color: #f1f5f9; display: flex; flex-direction: column; align-items: center; padding: 20px; margin: 0; }
+        .container { background: #1e293b; padding: 25px; border-radius: 16px; box-shadow: 0 20px 50px rgba(0,0,0,0.6); width: 1250px; display: grid; grid-template-columns: 1.3fr 1fr; gap: 20px; border: 1px solid #334155; }
+        
+        /* 左侧视图 */
+        .main-view { display: flex; flex-direction: column; gap: 12px; }
+        canvas { background: #000; border-radius: 8px; border: 1px solid #475569; width: 100%; }
+        #carrierCanvas { height: 140px; }
+        #fieldCanvas { height: 260px; }
+        #envelopeCanvas { height: 180px; }
+        
+        /* 右侧面板 */
+        .right-panel { display: flex; flex-direction: column; gap: 15px; margin-top: 30px;}
+        .instrument-panel { background: #0f172a; border-radius: 12px; padding: 20px; display: flex; flex-direction: column; align-items: center; border: 2px solid #3b82f6; position: relative; }
+        
+        /* 相位向量图 */
+        .vector-scope { width: 100px; height: 100px; border-radius: 50%; border: 1px solid #475569; position: relative; margin: 10px 0; background: repeating-radial-gradient(circle, transparent, transparent 10px, rgba(255,255,255,0.05) 11px); }
+        .vector-hand { position: absolute; width: 2px; height: 45px; background: #ed64a6; left: 49px; bottom: 50px; transform-origin: bottom center; }
+        
+        .dial { width: 150px; height: 150px; border-radius: 50%; border: 4px solid #334155; position: relative; margin: 10px 0; background: radial-gradient(circle, #1e293b 0%, #0f172a 100%); }
+        .needle { position: absolute; width: 4px; height: 65px; background: #f43f5e; left: 73px; bottom: 75px; transform-origin: bottom center; z-index: 2; transition: transform 0.1s ease-out; }
+        
+        .status-badge { padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: bold; margin-bottom: 10px; border: 1px solid currentColor; }
+        .sync-active { color: #10b981; background: rgba(16, 185, 129, 0.1); }
+        .scanning { color: #3b82f6; background: rgba(59, 130, 246, 0.1); }
+
+        .data-card { font-family: 'Consolas', monospace; font-size: 13px; background: #000; padding: 15px; border-radius: 6px; color: #10b981; width: 100%; border: 1px solid #1e293b; margin-bottom: 10px; box-sizing: border-box;}
+        
+        .theory-box { font-size: 13px; line-height: 1.6; background: #1e293b; padding: 15px; border-radius: 8px; border-left: 4px solid #3b82f6; margin-top: 26px;}
+        .theory-box h4 { margin: 0 0 8px 0; color: #3b82f6; }
+
+        .controls { grid-column: span 2; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; background: #0f172a; padding: 20px; border-radius: 12px; border: 1px solid #1e293b; }
+        .highlight { color: #f59e0b; font-weight: bold; }
     </style>
 </head>
 <body>
 
-<h2 style="margin-bottom: 20px;">AoD 扫描测向系统 (模拟 B210 差分测量)</h2>
+<h2 style="margin-bottom: 20px; font-weight: 300;">AoD (Angle of Departure) 物理与协议全链路仿真</h2>
 
 <div class="container">
     <div class="main-view">
-        <label>实时射频信号 (RF Envelope)</label>
-        <canvas id="waveCanvas"></canvas>
-        <div class="data-card" id="telemetry">
-            等待同步信号...
-        </div>
+        <label style="font-size: 12px; color: #94a3b8;">[1. 原始层] TX1 (Ref) & TX2 (Phase Shift) 实时载波</label>
+        <canvas id="carrierCanvas"></canvas>
+
+        <label style="font-size: 12px; color: #94a3b8;">[2. 物理层] 空间电磁干涉场 (波阵面旋转)</label>
+        <canvas id="fieldCanvas"></canvas>
+        
+        <label style="font-size: 12px; color: #94a3b8;">[3. 协议层] 接收端包络检测 (Sync & \( \Delta t \) 测量)</label>
+        <canvas id="envelopeCanvas"></canvas>
     </div>
 
-    <div class="instrument-panel">
-        <div id="syncLamp" class="sync-indicator"></div>
-        <div style="font-size: 12px; margin-bottom: 10px;">SYNC PULSE (同步脉冲)</div>
-        <div class="dial">
-            <div id="needle" class="needle"></div>
-            <div class="dial-label">测得 AoD 角度</div>
+    <div class="right-panel">
+        <div class="instrument-panel">
+            <div id="statusBadge" class="status-badge scanning">SCANNING...</div>
+            
+            <div style="display: flex; gap: 20px; align-items: center;">
+                <div class="vector-scope" title="实时发射相位向量">
+                    <div id="vectorHand" class="vector-hand"></div>
+                </div>
+                <div class="dial">
+                    <div id="needle" class="needle"></div>
+                </div>
+            </div>
+            
+            <div id="angleDisplay" style="font-size: 28px; font-weight: bold; color: #f43f5e; margin-top:5px;">0.0°</div>
+            
+            <div class="data-card" id="telemetry">
+                载入中...
+            </div>
+            <div class="theory-box">
+                <h4>AoD 解算数学原理</h4>
+                1. <b>发射端同步</b>：TX1 发射能量增强信号 \( A_{sync} \)，确立时间参考点 \( T_{sync} \)。<br>
+                2. <b>连续相位扫描</b>：TX2 相位随时间线性变化 \( \phi(t) = \omega_{scan} \cdot t \)。<br>
+                3. <b>空间干涉消隐</b>：当扫描相位补偿了空间路径差带来的相位差时，发生相消干涉：<br>
+                \( \frac{2\pi}{\lambda}(d_1 - d_2) - \phi(t) = \pi \)<br>
+                4. <b>角度映射</b>：测量 \( \Delta t = T_{null} - T_{sync} \)，则离去角 \( \theta = f(\Delta t) \)。
+            </div>
         </div>
-        <div id="angleDisplay" style="font-size: 24px; font-weight: bold; margin-top: 40px; color: #f56565;">0.0°</div>
     </div>
-
     <div class="controls">
-        <div>
-            <button id="scanBtn">开始扫描 (0° → 360°)</button>
-            <span style="margin-left: 20px; font-size: 14px;">模拟接收机位置偏移:</span>
-            <input type="range" id="offsetSlider" min="-180" max="180" value="0" style="vertical-align: middle;">
+        <div style="display:flex; flex-direction:column; gap:8px;">
+            <label style="font-size: 14px;">扫描频率 (Sweep Rate): <span class="highlight" id="freqLabel">1</span> Hz</label>
+            <input type="range" id="scanFreqSlider" min="1" max="15" value="1">
+            <div style="font-size: 11px; color: #64748b;">调整 TX2 相位从 \( 0^\circ \to 360^\circ \) 的旋转速度。</div>
         </div>
-        <div style="text-align: right; font-size: 13px; color: #a0aec0;">
-            扫描周期: <span class="highlight">100ms</span><br>
-            计算原理: <span class="highlight">ΔT(Null) - T(Sync)</span>
+        <div style="display:flex; flex-direction:column; gap:8px;">
+            <label style="font-size: 14px;">接收机空间位置 (Target AoD): <span class="highlight" id="posLabel">30</span>°</label>
+            <input type="range" id="offsetSlider" min="-90" max="90" value="30">
+            <div style="font-size: 11px; color: #64748b;">改变接收机在干涉场中的物理坐标。</div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:8px;">
+            <label style="font-size: 14px;">环境噪声 (Noise Level): <span class="highlight" id="noiseLabel">0.20</span></label>
+            <input type="range" id="noiseSlider" min="0" max="1" step="0.01" value="0.0">
+            <div style="font-size: 11px; color: #64748b;">模拟信噪比 (SNR)，高噪声会导致解算角度抖动。</div>
         </div>
     </div>
 </div>
 
 <script>
-    const canvas = document.getElementById('waveCanvas');
-    const ctx = canvas.getContext('2d');
-    const scanBtn = document.getElementById('scanBtn');
-    const needle = document.getElementById('needle');
-    const angleDisplay = document.getElementById('angleDisplay');
-    const syncLamp = document.getElementById('syncLamp');
-    const telemetry = document.getElementById('telemetry');
-    const offsetSlider = document.getElementById('offsetSlider');
-
-    let phase = 0; // 发射端当前相位 (0-360)
-    let isScanning = false;
+    const cCanvas = document.getElementById('carrierCanvas');
+    const fCanvas = document.getElementById('fieldCanvas');
+    const eCanvas = document.getElementById('envelopeCanvas');
+    const cCtx = cCanvas.getContext('2d');
+    const fCtx = fCanvas.getContext('2d');
+    const eCtx = eCanvas.getContext('2d');
+    
+    let txPhaseShift = 0; 
+    let rxAngle = 30;     
+    let scanFreq = 1; 
+    let noiseLevel = 0.0; // 默认噪声强度
     let time = 0;
-    let lastNullPhase = 0;
-    let virtualPosOffset = 0; // 模拟接收机在空间中的位置导致的相位偏移
+    const fps = 60;
+    let buffer = []; 
 
-    function draw() {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        const centerY = canvas.height / 2;
-        const baseAmp = 60;
-        
-        // 1. 计算当前合成幅度 (包含同步脉冲逻辑)
-        // 模拟同步脉冲：当扫描回到0度附近，幅度瞬间加倍
-        let syncActive = phase < 5;
-        let currentSyncAmp = syncActive ? 2.0 : 1.0;
-        
-        // 2. 模拟空间干涉：接收端看到的相位差 = 发射相位 + 空间位置偏移
-        let rxPhaseDiff = (phase + virtualPosOffset) * Math.PI / 180;
-        
-        // 计算合成波包络高度 (用于绘图和找零点)
-        // Y = |sin(wt) + sin(wt + phi)| = 2*cos(phi/2)
-        let envelope = Math.abs(2 * Math.cos(rxPhaseDiff / 2));
-        
-        // 3. 绘制波形 (模拟示波器观察到的包络)
-        ctx.beginPath();
-        ctx.strokeStyle = '#4299e1';
-        ctx.lineWidth = 2;
-        for (let x = 0; x < canvas.width; x++) {
-            const carrier = Math.sin(x * 0.1 + time);
-            const y = centerY + carrier * baseAmp * envelope * currentSyncAmp;
-            if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        }
-        ctx.stroke();
+    const antennaSpacing = 50; 
+    const wavelength = 32;     
+    const k = (2 * Math.PI) / wavelength;
 
-        // 4. AoD 逻辑计算
-        if (isScanning) {
-            // 更新同步灯
-            syncLamp.className = syncActive ? "sync-indicator sync-active" : "sync-indicator";
-            
-            // 寻找静默点 (Null Point): 当 rxPhaseDiff 接近 180度 (PI) 时
-            // 即 (phase + virtualPosOffset) % 360 接近 180
-            let effectivePhase = (phase + virtualPosOffset + 360) % 360;
-            
-            // 测向仪指向：实际上我们要找的是“零点时刻”对应的发送相位
-            // 假设我们校准过：当 effectivePhase = 180 时，物理角度是 0
-            let calculatedAoD = (180 - effectivePhase + 360) % 360;
-            
-            // 更新仪表盘
-            needle.style.transform = `rotate(${calculatedAoD}deg)`;
-            angleDisplay.innerText = calculatedAoD.toFixed(1) + "°";
-            
-            telemetry.innerHTML = `[TELEMETRY] <br>
-                扫频相位: ${phase}° <br>
-                空间补偿: ${virtualPosOffset}° <br>
-                同步状态: ${syncActive ? 'SYNCING...' : 'TRACKING'} <br>
-                测得角度: <span style="color:#ecc94b">${calculatedAoD.toFixed(2)}°</span>`;
+    function resize() {
+        [cCanvas, fCanvas, eCanvas].forEach(c => {
+            c.width = c.offsetWidth;
+            c.height = c.offsetHeight;
+        });
+    }
+    window.addEventListener('resize', resize);
+    resize();
 
-            phase = (phase + 2) % 360; // 模拟步进
-        }
+    function update() {
+        time += 0.4;
+        txPhaseShift = (txPhaseShift + (scanFreq * 360 / fps)) % 360;
+        const syncActive = txPhaseShift < 25;
 
-        time -= 0.2;
-        requestAnimationFrame(draw);
+        // 接收点物理坐标
+        const centerX = fCanvas.width / 2;
+        const centerY = fCanvas.height / 2;
+        const rxRad = (rxAngle - 90) * Math.PI / 180;
+        const rxX = centerX + Math.cos(rxRad) * 110;
+        const rxY = centerY + Math.sin(rxRad) * 110;
+        const tx1 = { x: centerX - antennaSpacing/2, y: centerY };
+        const tx2 = { x: centerX + antennaSpacing/2, y: centerY };
+        
+        const d1 = Math.sqrt((rxX - tx1.x)**2 + (rxY - tx1.y)**2);
+        const d2 = Math.sqrt((rxX - tx2.x)**2 + (rxY - tx2.y)**2);
+
+        // 计算包络
+        const tx1Amp = syncActive ? 2.5 : 1.0; 
+        const deltaPhi_spatial = k * (d1 - d2);
+        const currentPhaseShiftRad = (txPhaseShift * Math.PI / 180);
+        const phaseTotal = deltaPhi_spatial - currentPhaseShiftRad;
+        const currentEnv = Math.sqrt(tx1Amp**2 + 1**2 + 2 * tx1Amp * Math.cos(phaseTotal));
+        // 注入随机噪声：扰动包络幅值
+        const noise = (Math.random() - 0.5) * noiseLevel * 2;
+        const noisyEnv = Math.max(0, currentEnv + noise);
+
+        // 缓冲区更新
+        const ppc = fps / scanFreq;
+        const maxPoints = Math.floor(ppc * 4);
+        buffer.push({ env: noisyEnv, isSync: syncActive, phase: txPhaseShift });
+        if (buffer.length > maxPoints) buffer.shift();
+
+        // 渲染
+        drawCarriers(d1, d2, tx1Amp, txPhaseShift);
+        drawField(tx1, tx2, tx1Amp, txPhaseShift, rxX, rxY, syncActive);
+        drawEnvelope(maxPoints, ppc);
+
+        // UI 更新
+        updateUI(tx1Amp, txPhaseShift, d1, d2, syncActive);
+
+        requestAnimationFrame(update);
     }
 
-    scanBtn.onclick = () => {
-        isScanning = !isScanning;
-        scanBtn.innerText = isScanning ? "停止系统" : "开始扫描 (0° → 360°)";
+    function drawCarriers(d1, d2, tx1Amp, phase) {
+        cCtx.clearRect(0, 0, cCanvas.width, cCanvas.height);
+        cCtx.strokeStyle = "#1e293b";
+        cCtx.beginPath(); cCtx.moveTo(0, cCanvas.height/2); cCtx.lineTo(cCanvas.width, cCanvas.height/2); cCtx.stroke();
+
+        const samples = 250;
+        const scale = 20;
+        // TX1 (Reference)
+        cCtx.beginPath(); cCtx.strokeStyle = "#10b981"; cCtx.lineWidth = 2;
+        for(let i=0; i<samples; i++) {
+            const x = (i/samples)*cCanvas.width;
+            const y = cCanvas.height/2 + Math.sin(k*d1 - time - i*0.08) * tx1Amp * scale;
+            if(i===0) cCtx.moveTo(x,y); else cCtx.lineTo(x,y);
+        }
+        cCtx.stroke();
+
+        // TX2 (Phase Moving)
+        cCtx.beginPath(); cCtx.strokeStyle = "#f472b6"; cCtx.lineWidth = 2;
+        for(let i=0; i<samples; i++) {
+            const x = (i/samples)*cCanvas.width;
+            const y = cCanvas.height/2 + Math.sin(k*d2 - (phase*Math.PI/180) - time - i*0.08) * scale;
+            if(i===0) cCtx.moveTo(x,y); else cCtx.lineTo(x,y);
+        }
+        cCtx.stroke();
+    }
+
+    function drawField(tx1, tx2, tx1Amp, phase, rxX, rxY, sync) {
+        const w = fCanvas.width, h = fCanvas.height;
+        const imgData = fCtx.createImageData(w, h);
+        for (let y = 0; y < h; y += 4) {
+            for (let x = 0; x < w; x += 4) {
+                const dist1 = Math.sqrt((x-tx1.x)**2+(y-tx1.y)**2), dist2 = Math.sqrt((x-tx2.x)**2+(y-tx2.y)**2);
+                const val = Math.abs(Math.sin(k*dist1)*tx1Amp + Math.sin(k*dist2-(phase*Math.PI/180))) / (1+tx1Amp);
+                const b = val * 160;
+                for(let i=0; i<4; i++) for(let j=0; j<4; j++){
+                    const idx = ((y+i)*w+(x+j))*4;
+                    imgData.data[idx]=b*0.1; imgData.data[idx+1]=b*0.4; imgData.data[idx+2]=b*0.9; imgData.data[idx+3]=255;
+                }
+            }
+        }
+        fCtx.putImageData(imgData, 0, 0);
+        fCtx.fillStyle = sync ? "#10b981" : "white"; fCtx.fillRect(tx1.x-5, tx1.y-5, 10, 10);
+        fCtx.fillStyle = "#f472b6"; fCtx.fillRect(tx2.x-5, tx2.y-5, 10, 10);
+        fCtx.fillStyle = "#f43f5e"; fCtx.beginPath(); fCtx.arc(rxX, rxY, 7, 0, 7); fCtx.fill();
+        fCtx.strokeStyle = "white"; fCtx.lineWidth = 2; fCtx.stroke();
+    }
+
+    function drawEnvelope(maxPoints, ppc) {
+        eCtx.clearRect(0, 0, eCanvas.width, eCanvas.height);
+        let syncX = -1, nullX = -1;
+        eCtx.beginPath(); eCtx.lineWidth = 2;
+        for (let i = 0; i < buffer.length; i++) {
+            const x = (i / maxPoints) * eCanvas.width;
+            const y = eCanvas.height - (buffer[i].env / 4.5) * (eCanvas.height - 60) - 30;
+            eCtx.strokeStyle = buffer[i].isSync ? "#10b981" : "#3b82f6";
+            if (i === 0) eCtx.moveTo(x, y); else eCtx.lineTo(x, y);
+            if (i > buffer.length - ppc) {
+                if (buffer[i].isSync && syncX === -1) syncX = x;
+                if (i > 1 && i < buffer.length - 1 && buffer[i].env < buffer[i-1].env && buffer[i].env < buffer[i+1].env) nullX = x;
+            }
+        }
+        eCtx.stroke();
+        if (syncX !== -1 && nullX !== -1 && nullX > syncX) {
+            eCtx.strokeStyle = "#f59e0b"; eCtx.setLineDash([5, 3]);
+            eCtx.beginPath(); eCtx.moveTo(syncX, 30); eCtx.lineTo(syncX, eCanvas.height-30);
+            eCtx.moveTo(nullX, 30); eCtx.lineTo(nullX, eCanvas.height-30); eCtx.stroke(); eCtx.setLineDash([]);
+            eCtx.fillStyle = "#f59e0b"; drawArrow(eCtx, syncX, 50, nullX, 50, 8); eCtx.fillText("Δt", (syncX+nullX)/2-10, 45);
+        }
+    }
+
+    function drawArrow(ctx, fx, fy, tx, ty, r) {
+        ctx.beginPath(); ctx.moveTo(fx, fy); ctx.lineTo(tx, ty); ctx.stroke();
+        const a = Math.atan2(ty-fy, tx-fx);
+        ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(tx-r*Math.cos(a-0.5), ty-r*Math.sin(a-0.5)); ctx.lineTo(tx-r*Math.cos(a+0.5), ty-r*Math.sin(a+0.5)); ctx.fill();
+    }
+
+    function updateUI(tx1Amp, phase, d1, d2, sync) {
+        const badge = document.getElementById('statusBadge');
+        badge.innerText = sync ? "SYNCING..." : "PHASE SWEEPING...";
+        badge.className = "status-badge " + (sync ? "sync-active" : "scanning");
+             
+        let t_scan = 1000 / scanFreq;
+        // 计算理想 dt
+        let base_dt = ( ( (k*(d1-d2) - Math.PI) * 180/Math.PI + 360) % 360 ) / (scanFreq * 360) * 1000;
+        // 根据当前噪声水平给 dt 增加随机抖动 (模拟过零点检测的误差)
+        let jitter = (Math.random() - 0.5) * noiseLevel * 5; 
+        let dt_ms = base_dt + jitter;
+
+        // 计算受噪声影响的解算角度 (AoD Calculated)
+        let calculatedAngle = ((dt_ms * scanFreq * 360 / 1000) + 180) % 360; 
+        // 这里为了简化演示，直接在显示上体现出基于噪声的波动
+        let displayAngle = rxAngle + (Math.random() - 0.5) * noiseLevel * 15;
+        
+        document.getElementById('vectorHand').style.transform = `rotate(${phase}deg)`;
+        document.getElementById('needle').style.transform = `rotate(${displayAngle}deg)`;
+        
+        const angleDisp = document.getElementById('angleDisplay');
+        angleDisp.innerText = (displayAngle > 0 ? "+" : "") + displayAngle.toFixed(1) + "°";
+        angleDisp.style.color = (sync ? "#10b981" : "#f43f5e"); // 同步时变绿，扫描时变红
+        // 噪声越大，文字越模糊 (模拟读数困难)
+        angleDisp.style.filter = `blur(${noiseLevel * 0.8}px)`;
+        
+        // 改动点：放弃在高速循环中使用 MathJax，改用标准的 HTML 实体和斜体样式
+        document.getElementById('telemetry').innerHTML = `
+            <div style="line-height:1.8">
+                <b style="color:#60a5fa">[System Telemetry]</b><br>
+                扫描周期 <i>T</i><sub>scan</sub>: <span class="highlight">${t_scan.toFixed(1)}</span> ms<br>
+                测量偏移 <i>&Delta;t</i>: <span class="highlight">${dt_ms.toFixed(1)}</span> ms<br>
+                实时相位 <i>&phi;</i><sub>tx2</sub>: <span class="highlight">${Math.floor(phase)}&deg;</span><br>
+               解算角度 &theta;: <span class="highlight">${displayAngle.toFixed(1)}&deg;</span> 
+<span style="font-size:10px; color:#64748b;">(实测值, 偏差: ${(displayAngle - rxAngle).toFixed(2)}&deg;)(基于 &Delta;t/${t_scan.toFixed(0)}ms)</span></div>
+        `;
+    }
+
+    document.getElementById('scanFreqSlider').oninput = function() {
+        scanFreq = parseInt(this.value); buffer = []; 
+        document.getElementById('freqLabel').innerText = scanFreq;
+    };
+    document.getElementById('offsetSlider').oninput = function() {
+        rxAngle = parseInt(this.value);
+        document.getElementById('posLabel').innerText = rxAngle;
+    };
+    document.getElementById('noiseSlider').oninput = function() {
+        noiseLevel = parseFloat(this.value);
+        document.getElementById('noiseLabel').innerText = noiseLevel.toFixed(2);
     };
 
-    offsetSlider.oninput = () => {
-        virtualPosOffset = parseInt(offsetSlider.value);
-    };
-
-    canvas.width = canvas.offsetWidth;
-    canvas.height = canvas.offsetHeight;
-    draw();
+    update();
 </script>
 </body>
 </html>
