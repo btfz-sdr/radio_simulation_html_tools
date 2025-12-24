@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>蓝牙 CS 测距：全流程原理看板 (最终版)</title>
+    <style>
+        :root { --bg: #0f172a; --panel: #1e293b; --primary: #38bdf8; --accent: #4ade80; --text: #f1f5f9; --math: #fbbf24; --alert: #fb7185; }
+        body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        .wrapper { max-width: 1250px; width: 100%; display: grid; grid-template-columns: 1fr 380px; gap: 20px; }
+        
+        /* 左侧视图 */
+        .view-panel { display: flex; flex-direction: column; gap: 20px; }
+        canvas { background: #000; border-radius: 12px; border: 1px solid #334155; width: 100%; }
+        #waveCanvas { height: 220px; }
+        #plotCanvas { height: 240px; } /* 略微增加高度以容纳刻度 */
+
+        .info-card { background: #020617; padding: 18px; border-radius: 10px; border-left: 4px solid var(--math); font-size: 0.85em; line-height: 1.6; }
+        .formula { font-family: 'Times New Roman', serif; color: var(--math); font-style: italic; font-weight: bold; font-size: 1.1em; }
+        
+        /* 技术对比表 */
+        .tech-table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 0.9em; background: rgba(255,255,255,0.03); }
+        .tech-table th { text-align: left; color: var(--primary); border-bottom: 1px solid #1e293b; padding: 8px; }
+        .tech-table td { padding: 8px; border-bottom: 1px solid #1e293b; vertical-align: top; }
+        .tech-tag { color: var(--math); font-weight: bold; }
+
+        /* 右侧侧边栏 */
+        .sidebar { background: var(--panel); padding: 20px; border-radius: 16px; border: 1px solid #334155; display: flex; flex-direction: column; gap: 12px; max-height: 1000px; overflow-y: auto; }
+        
+        /* 数据展示组 */
+        .data-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .data-item { background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px; text-align: center; }
+        .label { font-size: 0.72em; color: #94a3b8; display: block; margin-bottom: 2px; text-transform: uppercase; }
+        .value { font-family: 'Consolas', monospace; font-size: 1.1em; font-weight: bold; color: var(--primary); }
+        
+        /* RTT 动态面板 */
+        .rtt-panel { background: rgba(251, 113, 133, 0.1); border: 1px solid var(--alert); padding: 12px; border-radius: 10px; }
+
+        .step-info { background: rgba(56, 189, 248, 0.05); border: 1px dashed var(--primary); padding: 12px; border-radius: 10px; font-size: 0.82em; line-height: 1.5; color: #cbd5e1; }
+        .step-info b { color: var(--primary); }
+
+        .log-container { background: #020617; border: 1px solid #334155; border-radius: 10px; height: 195px; overflow-y: auto; padding: 10px; font-family: 'Consolas', monospace; font-size: 11px; }
+        .log-entry { margin-bottom: 4px; border-bottom: 1px solid #1e293b; padding-bottom: 2px; }
+        .log-time { color: #64748b; margin-right: 6px; }
+        .log-cmd { color: var(--primary); }
+        .log-data { color: var(--accent); }
+        .log-calc { color: var(--math); }
+        .log-rtt { color: var(--alert); font-weight: bold; }
+
+        button { background: var(--primary); color: #000; border: none; padding: 14px; border-radius: 8px; font-weight: bold; cursor: pointer; transition: 0.2s; font-size: 1em; }
+        button:hover { background: #7dd3fc; }
+        button:disabled { background: #475569; }
+        input[type=range] { width: 100%; accent-color: var(--primary); }
+        
+        /* 紧凑型控制器容器 */
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            background: rgba(2, 6, 23, 0.4);
+            padding: 12px;
+            border-radius: 10px;
+            border: 1px solid #334155;
+            margin-bottom: 5px;
+        }
+
+        .ctrl-item {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .ctrl-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center; /* 垂直居中 */
+            margin-bottom: 2px;
+        }
+
+        /* 数值与单位紧凑靠拢 */
+        .value-group {
+            display: flex;
+            align-items: baseline; /* 底部对齐，让单位看起来像角标 */
+        }
+
+        .value-group .value {
+            color: var(--primary);
+            font-family: 'Consolas', monospace;
+            font-size: 1.1em;
+            font-weight: bold;
+        }
+
+        .value-group .unit {
+            color: #64748b;
+            font-size: 0.75em;
+            margin-left: 2px; /* 极小的间距，确保单位紧贴数值 */
+        }
+
+        .label {
+            font-size: 0.72em;
+            color: #94a3b8;
+            text-transform: uppercase;
+        }
+
+        input[type=range] {
+            margin-top: 4px;
+            height: 6px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+
+<div class="wrapper">
+    <div class="view-panel">
+        <canvas id="waveCanvas"></canvas>
+        <canvas id="plotCanvas"></canvas>
+        
+        <div style="color:var(--primary); font-size:0.75em; margin-bottom:5px;">IFFT 距离能量谱 (时域分析)</div>
+        <canvas id="ifftCanvas" style="height: 120px;"></canvas>
+
+        <div class="info-card">
+            <strong>核心数学推导：</strong><br>
+            1. 相位关系：<span class="formula">Φ = (4π · d · f) / c</span> | 2. 防翻转步长：<span class="formula">Δf = 4MHz</span> | 3. 最终解：<span class="formula" style="color:var(--accent)">d = (Slope · c) / 4π</span>
+            
+            <table class="tech-table">
+                <thead>
+                    <tr><th>核心技术</th><th>角色</th><th>优点/功能</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td class="tech-tag">PBR (相位)</td><td>精密尺子</td><td>提供厘米级（±10cm）的超高精度。</td></tr>
+                    <tr><td class="tech-tag">RTT (时间)</td><td>安全底线</td><td>防止相位误判，防御距离欺骗攻击。</td></tr>
+                    <tr><td class="tech-tag">IFFT (算法)</td><td>环境滤镜</td><td>利用逆傅里叶变换过滤墙壁反射信号。</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="sidebar">
+        <h3 style="margin:0">CS 实时解算与校验</h3>
+        
+        <div class="control-group">
+            <div class="ctrl-item">
+                <div class="ctrl-header">
+                    <span class="label">设定距离 (Target)</span>
+                    <div class="value-group">
+                        <span id="distVal" class="value">8.00</span><span class="unit">m</span>
+                    </div>
+                </div>
+                <input type="range" id="distIn" min="1" max="15" step="0.01" value="8.0">
+            </div>
+            
+            <div class="ctrl-item">
+                <div class="ctrl-header">
+                    <span class="label">热噪声 (Noise)</span>
+                    <div class="value-group">
+                        <span id="noiseVal" class="value">0.08</span><span class="unit">rad</span>
+                    </div>
+                </div>
+                <input type="range" id="noiseIn" min="0" max="0.5" step="0.01" value="0.08">
+            </div>
+
+            <div class="ctrl-item">
+                <div class="ctrl-header">
+                    <span class="label">多径强度 (Multi)</span>
+                    <div class="value-group">
+                        <span id="multiVal" class="value">0.15</span><span class="unit">Amp</span>
+                    </div>
+                </div>
+                <input type="range" id="multiIn" min="0" max="0.8" step="0.01" value="0.15">
+            </div>
+        </div>
+
+        <button id="startBtn">启动 PBR + RTT 全量扫描</button>
+
+        <div class="rtt-panel">
+            <span class="label" style="color:var(--alert)">RTT 纳秒级往返校验 (Time Domain)</span>
+            <div style="display:flex; justify-content: space-between; align-items: center; margin-top: 5px;">
+                <span id="rttTime" class="value" style="color:var(--alert)">--- ns</span>
+                <span id="rttDist" class="value" style="color:var(--alert)">--- m</span>
+            </div>
+        </div>
+        
+        <div class="data-grid">
+            <div class="data-item">
+                <span class="label">当前频率</span>
+                <span id="curFreq" class="value">--- MHz</span>
+            </div>
+            <div class="data-item">
+                <span class="label">观测相位</span>
+                <span id="curPhase" class="value">--- rad</span>
+            </div>
+        </div>
+
+        <div class="data-grid">
+            <div class="data-item">
+                <span class="label">PBR 拟合结果</span>
+                <span id="resDist" class="value" style="color:var(--accent)">---</span>
+            </div>
+            <div class="data-item">
+                <span class="label">校验状态</span>
+                <span id="verifyStatus" class="value">READY</span>
+            </div>
+        </div>
+
+        <div class="step-info">
+            <div style="font-weight: bold; margin-bottom: 5px; color: var(--math);">原理分步说明：</div>
+            • <b>SYNC</b>: Initiator 发送频率同步指令。<br>
+            • <b>RTT_Check</b>: 测量飞行时间 (ToF) 以确定距离基准。<br>
+            • <b>IQ_DATA</b>: Reflector 返回物理层 IQ 采样信息。<br>
+            • <b>Unwrapping</b>: 修正 2π 翻转，防止长距离误判。<br>
+            • <b>Fitting</b>: 通过多点拟合最优直线斜率。
+        </div>
+
+        <div class="log-container" id="logBox">
+            <div style="color: #64748b;">等待启动...</div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const wCanvas = document.getElementById('waveCanvas');
+    const pCanvas = document.getElementById('plotCanvas');
+    const wCtx = wCanvas.getContext('2d');
+    const pCtx = pCanvas.getContext('2d');
+    const logBox = document.getElementById('logBox');
+    const C = 299792458;
+    
+    const iCanvas = document.getElementById('ifftCanvas');
+    const iCtx = iCanvas.getContext('2d');
+    // 确保页面加载时初始化尺寸
+    iCanvas.width = iCanvas.offsetWidth; iCanvas.height = iCanvas.offsetHeight;
+
+    let sim = {
+        dist: 8.0,
+        noiseLevel: 0.08,
+        multiAmp: 0.15,
+        state: 'IDLE',
+        channels: Array.from({length: 15}, (_, i) => 2402e6 + i * 4.0e6),
+        activeIdx: -1,
+        packets: [],
+        history: [],
+        time: 0,
+        startTime: 0
+    };
+
+    function addLog(msg, type='info') {
+        const time = ((Date.now() - sim.startTime) / 1000).toFixed(1);
+        const div = document.createElement('div');
+        div.className = 'log-entry';
+        div.innerHTML = `<span class="log-time">[${time}s]</span><span class="log-${type}">${msg}</span>`;
+        logBox.appendChild(div);
+        logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    document.getElementById('distIn').oninput = (e) => {
+        sim.dist = parseFloat(e.target.value);
+        document.getElementById('distVal').innerText = sim.dist.toFixed(2);
+    };
+    document.getElementById('noiseIn').oninput = (e) => {
+        sim.noiseLevel = parseFloat(e.target.value);
+        document.getElementById('noiseVal').innerText = sim.noiseLevel.toFixed(2);
+    };
+    document.getElementById('multiIn').oninput = (e) => {
+        sim.multiAmp = parseFloat(e.target.value);
+        document.getElementById('multiVal').innerText = sim.multiAmp.toFixed(2);
+    };
+
+    document.getElementById('startBtn').onclick = runSequence;
+
+    async function runSequence() {
+        sim.state = 'RUNNING';
+        sim.history = [];
+        sim.startTime = Date.now();
+        logBox.innerHTML = '';
+        document.getElementById('startBtn').disabled = true;
+        document.getElementById('verifyStatus').innerText = "VERIFYING...";
+        document.getElementById('verifyStatus').style.color = "var(--math)";
+        
+        addLog("开始信道探测全流程扫描...", "info");
+
+        for (let i = 0; i < sim.channels.length; i++) {
+            sim.activeIdx = i;
+            const f = sim.channels[i];
+            
+            // 频率显示更新
+            document.getElementById('curFreq').innerText = (f/1e6).toFixed(0) + " MHz";
+
+            // RTT 逻辑计算
+            const rttNs = (2 * sim.dist / C) * 1e9 + (Math.random() * 0.4);
+            const rttD = (rttNs * 1e-9 * C) / 2;
+            document.getElementById('rttTime').innerText = rttNs.toFixed(2) + " ns";
+            document.getElementById('rttDist').innerText = rttD.toFixed(2) + " m";
+
+            sim.packets.push({ from: 'A', to: 'B', text: 'SYNC+RTT', type: 'CMD', progress: 0 });
+            addLog(`信道 ${i+1}: 发起 RTT 同步探测`, "cmd");
+            await wait(800); 
+            
+            const lambda = C / f;
+            // 引入多径与噪声仿真
+            const realPhase = (4 * Math.PI * sim.dist) / lambda;
+            const multiPathDist = sim.dist + 2.0; 
+            const multiPhase = (4 * Math.PI * multiPathDist) / lambda;
+            const complexReal = Math.cos(realPhase) + sim.multiAmp * Math.cos(multiPhase);
+            const complexImag = Math.sin(realPhase) + sim.multiAmp * Math.sin(multiPhase);
+            const noise = (Math.random() - 0.5) * sim.noiseLevel; 
+            const phase = (Math.atan2(complexImag, complexReal) + noise + 2 * Math.PI) % (2 * Math.PI);
+            
+            document.getElementById('curPhase').innerText = phase.toFixed(3) + " rad";
+
+            sim.packets.push({ from: 'B', to: 'A', text: 'IQ_DATA', type: 'IQ', progress: 0 });
+            addLog(`[IQ] 接收相位 ${phase.toFixed(2)}rad`, "data");
+            await wait(800);
+
+            let unwrappedP = phase;
+            if (sim.history.length > 0) {
+                const prev = sim.history[sim.history.length-1];
+                let diff = phase - (prev.p % (2*Math.PI));
+                while (diff < -Math.PI) diff += 2 * Math.PI;
+                while (diff > Math.PI) diff -= 2 * Math.PI;
+                unwrappedP = prev.unwrappedP + diff;
+            }
+            sim.history.push({ f, p: phase, unwrappedP });
+        }
+
+        addLog("[Fitting] 执行 PBR 精密拟合...", "calc");
+        const estDist = calculateFinalDist();
+        document.getElementById('resDist').innerText = estDist.toFixed(4) + " m";
+        
+        if (document.getElementById('verifyStatus').innerText !== "MULTIPATH DETECTED") {
+            document.getElementById('verifyStatus').innerText = "SECURED";
+            document.getElementById('verifyStatus').style.color = "var(--accent)";
+        }
+        addLog(`[OK] 校验通过。`, "rtt");
+        
+        sim.state = 'IDLE';
+        sim.activeIdx = -1;
+        document.getElementById('startBtn').disabled = false;
+    }
+
+    function calculateFinalDist() {
+        const n = sim.history.length;
+        let sumX=0, sumY=0, sumXY=0, sumXX=0;
+        sim.history.forEach(d => {
+            sumX += d.f; sumY += d.unwrappedP;
+            sumXY += d.f * d.unwrappedP; sumXX += d.f * d.f;
+        });
+        const k = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
+        const b = (sumY - k * sumX) / n;
+        
+        let totalResidual = 0;
+        sim.history.forEach(d => {
+            const prediction = k * d.f + b;
+            totalResidual += Math.abs(d.unwrappedP - prediction);
+        });
+        const avgResidual = totalResidual / n;
+        const threshold = 0.05 + sim.noiseLevel + sim.multiAmp * 0.5;
+        if (avgResidual > threshold) {
+            document.getElementById('verifyStatus').innerText = "MULTIPATH DETECTED";
+            document.getElementById('verifyStatus').style.color = "var(--alert)";
+        }
+
+        return (k * C) / (4 * Math.PI);
+    }
+    
+    function drawIFFT() {
+        if (sim.history.length < 2) return;
+        
+        const w = iCanvas.width;
+        const h = iCanvas.height;
+        iCtx.clearRect(0, 0, w, h);
+
+        // 绘制坐标轴
+        iCtx.strokeStyle = "#334155";
+        iCtx.beginPath();
+        iCtx.moveTo(40, 10); iCtx.lineTo(40, h - 25); iCtx.lineTo(w - 10, h - 25);
+        iCtx.stroke();
+
+        const maxScanDist = 20; // 扫描 20 米范围
+        const spectrum = [];
+
+        // 执行模拟 IDFT 变换
+        for (let d = 0; d <= maxScanDist; d += 0.1) {
+            let real = 0, imag = 0;
+            sim.history.forEach(item => {
+                // 计算当前距离假设下的理论相位
+                const theoryPhase = (4 * Math.PI * d * item.f) / C;
+                // 计算观测值与理论值的相干性
+                real += Math.cos(item.unwrappedP - theoryPhase);
+                imag += Math.sin(item.unwrappedP - theoryPhase);
+            });
+            const energy = Math.sqrt(real * real + imag * imag) / sim.history.length;
+            spectrum.push(energy);
+        }
+
+        // 绘制能量曲线
+        iCtx.beginPath();
+        iCtx.strokeStyle = "#4ade80";
+        iCtx.lineWidth = 2;
+        spectrum.forEach((amp, i) => {
+            const x = 40 + (i / spectrum.length) * (w - 50);
+            const y = (h - 25) - amp * (h - 40);
+            if (i === 0) iCtx.moveTo(x, y); else iCtx.lineTo(x, y);
+        });
+        iCtx.stroke();
+
+        // 标注距离刻度
+        iCtx.fillStyle = "#94a3b8";
+        iCtx.font = "10px Arial";
+        for (let d = 0; d <= maxScanDist; d += 5) {
+            const x = 40 + (d / maxScanDist) * (w - 50);
+            iCtx.fillText(d + "m", x, h - 10);
+        }
+    }
+
+    function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    function draw() {
+        sim.time += 0.02;
+        wCtx.clearRect(0,0,wCanvas.width, wCanvas.height);
+        const startX = 80, endX = startX + sim.dist * 35, y = 160;
+        
+        if (sim.activeIdx >= 0) {
+            const f = sim.channels[sim.activeIdx];
+            const lambdaVis = (C/f)*25;
+            wCtx.beginPath();
+            wCtx.strokeStyle = `hsl(${(f-2402e6)/4e6 * 10}, 70%, 50%)`;
+            wCtx.lineWidth = 3;
+            for(let x=startX; x<=endX; x++) {
+                const wy = y + Math.sin((x-startX)/lambdaVis * 2*Math.PI - sim.time*7)*40;
+                x===startX ? wCtx.moveTo(x, wy) : wCtx.lineTo(x, wy);
+            }
+            wCtx.stroke();
+        }
+
+        sim.packets.forEach((p, i) => {
+            p.progress += 0.02;
+            const px = p.from==='A' ? startX+(endX-startX)*p.progress : endX-(endX-startX)*p.progress;
+            const py = y - 80;
+            wCtx.fillStyle = p.type === 'IQ' ? '#4ade80' : '#fff';
+            if(p.type === 'IQ') { wCtx.shadowBlur = 10; wCtx.shadowColor = '#4ade80'; }
+            wCtx.beginPath(); wCtx.roundRect(px-35, py, 70, 24, 6); wCtx.fill();
+            wCtx.shadowBlur = 0;
+            wCtx.fillStyle = '#000'; wCtx.font = 'bold 10px Arial'; wCtx.textAlign = 'center';
+            wCtx.fillText(p.text, px, py + 16);
+            if(p.progress >= 1) sim.packets.splice(i, 1);
+        });
+
+        drawNode(wCtx, startX, y, "Initiator", "#38bdf8");
+        drawNode(wCtx, endX, y, "Reflector", "#fb7185");
+
+        // --- 拟合图逻辑修复版 ---
+        pCtx.clearRect(0,0,pCanvas.width, pCanvas.height);
+        const m = { top: 30, right: 30, bottom: 50, left: 60 };
+        const pw = pCanvas.width - m.left - m.right;
+        const ph = pCanvas.height - m.top - m.bottom;
+
+        pCtx.strokeStyle="#334155"; pCtx.lineWidth=1; pCtx.beginPath();
+        pCtx.moveTo(m.left, m.top); pCtx.lineTo(m.left, m.top + ph); pCtx.lineTo(m.left + pw, m.top + ph); pCtx.stroke();
+
+        // 绘制坐标轴文字
+        pCtx.fillStyle="#94a3b8"; pCtx.font="10px Arial"; pCtx.textAlign="center";
+        [0, 5, 10, 14].forEach(idx => {
+            const x = m.left + (idx/14) * pw;
+            const freqLabel = (sim.channels[idx]/1e6).toFixed(0);
+            pCtx.fillText(freqLabel, x, m.top + ph + 15);
+        });
+
+        // 核心修复：绘制点、线、以及点到线的红色残差虚线
+        if(sim.history.length > 0) {
+            const n = sim.history.length;
+            let sX=0, sY=0, sXY=0, sXX=0;
+            sim.history.forEach(d => { sX += d.f; sY += d.unwrappedP; sXY += d.f * d.unwrappedP; sXX += d.f * d.f; });
+            const k = (n * sXY - sX * sY) / (n * sXX - sX * sX);
+            const b = (sY - k * sX) / n;
+            const currentMaxY = Math.max(...sim.history.map(d => d.unwrappedP), 10);
+            const maxP = currentMaxY * 1.2; // 动态适应当前最大相位值，预留 20% 空间
+
+            // 1. 先画黄色的拟合趋势线
+            pCtx.beginPath();
+            pCtx.strokeStyle = "rgba(251, 191, 36, 0.5)"; // var(--math) 透明度版
+            pCtx.lineWidth = 1;
+            const lineX1 = m.left;
+            const lineY1 = (m.top + ph) - ((k * sim.channels[0] + b) / maxP) * ph;
+            const lineX2 = m.left + pw;
+            const lineY2 = (m.top + ph) - ((k * sim.channels[14] + b) / maxP) * ph;
+            pCtx.moveTo(lineX1, lineY1); pCtx.lineTo(lineX2, lineY2);
+            pCtx.stroke();
+
+            // 2. 遍历每个点，画残差虚线和绿点
+            sim.history.forEach((d, i) => {
+                const hx = m.left + (i / 14) * pw;
+                const hy = (m.top + ph) - (d.unwrappedP / maxP) * ph;
+                const targetY = (m.top + ph) - ((k * d.f + b) / maxP) * ph;
+                
+                // 绘制红色残差虚线 (Residuals)
+                pCtx.save();
+                pCtx.setLineDash([3, 3]);
+                pCtx.strokeStyle = "#fb7185"; // var(--alert)
+                pCtx.beginPath();
+                pCtx.moveTo(hx, hy);
+                pCtx.lineTo(hx, targetY);
+                pCtx.stroke();
+                pCtx.restore();
+
+                // 绘制采样绿点
+                pCtx.fillStyle = "#4ade80"; 
+                pCtx.beginPath(); pCtx.arc(hx, hy, 4, 0, Math.PI*2); pCtx.fill();
+            });
+            
+            // 3. 画连接采样点的黄线（原始路径）
+            pCtx.beginPath();
+            pCtx.strokeStyle = "#fbbf24";
+            pCtx.lineWidth = 2;
+            sim.history.forEach((d, i) => {
+                const hx = m.left + (i / 14) * pw;
+                const hy = (m.top + ph) - (d.unwrappedP / maxP) * ph;
+                if(i===0) pCtx.moveTo(hx, hy); else pCtx.lineTo(hx, hy);
+            });
+            pCtx.stroke();
+        }
+        drawIFFT(); 
+        requestAnimationFrame(draw);
+    }
+
+    function drawNode(ctx, x, y, label, col) {
+        ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x,y,16,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle="#fff"; ctx.font="bold 12px Arial"; ctx.textAlign='center';
+        ctx.fillText(label, x, y+35);
+    }
+
+    wCanvas.width = wCanvas.offsetWidth; wCanvas.height = wCanvas.offsetHeight;
+    pCanvas.width = pCanvas.offsetWidth; pCanvas.height = pCanvas.offsetHeight;
+    draw();
+</script>
+
+</body>
+</html>
