@@ -1,0 +1,960 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>BLE 5.0 专家级全协议链分析仪</title>
+    <style>
+        :root { 
+            --bg: #0d1117; --panel: #161b22; --line: #30363d; 
+            --m-blue: #58a6ff; --s-red: #ff7b72; --ws-bg: #ffffff; 
+            --hex-highlight: #ffd33d; --l2cap-clr: #7ee787; --att-clr: #d29922;
+        }
+        body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: #c9d1d9; margin: 0; padding: 10px; overflow: hidden; }
+        
+        .app-container { 
+            display: grid; 
+            grid-template-columns: 280px 1fr 450px; 
+            gap: 12px; 
+            height: calc(100vh - 20px); 
+        }
+
+        /* 左侧面板 */
+        .sidebar { display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+        .control-panel, .detail-panel { 
+            background: var(--panel); border-radius: 8px; border: 1px solid var(--line); padding: 15px;
+        }
+        .control-panel { flex: 0 0 auto; overflow-y: auto; max-height: 60%; }
+        .detail-panel { flex: 1; overflow-y: auto; display: flex; flex-direction: column; min-height: 0; border-top: 3px solid var(--m-blue); }
+        
+        h3 { color: var(--m-blue); margin: 0 0 10px 0; font-size: 14px; border-bottom: 1px solid var(--line); padding-bottom: 8px; display: flex; justify-content: space-between;}
+        .section-title { font-size: 10px; color: #8b949e; margin: 12px 0 6px; text-transform: uppercase; font-weight: bold; border-left: 3px solid var(--m-blue); padding-left: 5px;}
+        
+        /* 16进制解析样式 */
+        .hex-dump { font-family: 'Consolas', monospace; font-size: 11px; color: #7ee787; background: #010409; padding: 8px; border-radius: 4px; line-height: 1.5; word-break: break-all; margin-bottom: 10px; border: 1px solid var(--line); }
+        .field-item { display: flex; justify-content: space-between; border-bottom: 1px solid #21262d; padding: 4px 0; font-size: 11px; }
+        .field-label { color: #8b949e; }
+        .field-val { color: var(--hex-highlight); font-family: monospace; }
+        .field-sub { padding-left: 10px; font-size: 10px; color: #abb2bf; }
+
+        /* 中间绘图区 */
+        .main-charts { 
+            display: grid; 
+            grid-template-rows: 1fr 140px; /* 顶部绘图区 + 底部 RSSI */
+            gap: 12px; 
+        }
+        /* 绘图区内部左右并列 */
+        .chart-container-flex {
+            display: flex;
+            gap: 12px;
+            height: 100%;
+        }
+        /* 时隙图占比 2/1 */
+        .chart-zone, .sequence-zone { 
+            flex: 2; 
+            position: relative; 
+            background: var(--panel); 
+            border-radius: 8px; 
+            border: 1px solid var(--line);
+            display: flex;       /* 新增：使用 Flex 布局 */
+            flex-direction: column; /* 新增：垂直排列标题和画布 */
+        }
+        /* 信号流占比 1/1 (按 2:1 比例) */
+        .sequence-zone { flex: 1; } /* 保持原有的比例 */
+        canvas { background: #000; width: 100%; flex: 1; border-radius: 4px; display: block; }
+
+        /* 右侧列表 */
+        .wireshark-zone { background: var(--ws-bg); color: #000; border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; border: 1px solid var(--line); }
+        .ws-header { background: #e0e0e0; display: grid; grid-template-columns: 45px 75px 60px 1fr; font-size: 11px; font-weight: bold; border-bottom: 1px solid #ccc; }
+        .ws-body { flex: 1; overflow-y: auto; font-family: 'Consolas', monospace; font-size: 11px; }
+        .ws-row { display: grid; grid-template-columns: 45px 75px 60px 1fr; border-bottom: 1px solid #eee; cursor: pointer; }
+        .ws-row:hover { background: #f0f7ff; }
+        .ws-row.selected { background: #d0e8ff !important; border-left: 4px solid var(--m-blue); }
+        .ws-header div, .ws-row div { padding: 6px 4px; border-right: 1px solid #ddd; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+        .proto-adv { background: #ffffd5; } .proto-ll { background: #e2f0ff; } .proto-att { background: #e7e7ff; } .proto-notify { background: #f2e7ff; }
+
+        /* 控制组件 */
+        .control-group { margin-bottom: 8px; }
+        label { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 2px; }
+        label span { color: #7ee787; font-family: monospace; }
+        input, select { width: 100%; background: #010409; border: 1px solid var(--line); color: #fff; padding: 4px; border-radius: 4px; font-size: 11px; }
+        
+        .btn { width: 100%; padding: 8px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; color: white; margin-top: 4px; font-size: 11px; }
+        .btn-start { background: #238636; } .btn-pause { background: #d29922; } .btn-conn { background: #1f6feb; } .btn-gatt { background: #8957e5; }
+        .btn:disabled { opacity: 0.15; cursor: not-allowed; }
+        .paused { background: #238636 !important; }
+
+        /* 按钮按动效果 */
+        .btn:active {
+            transform: translateY(1px);
+            filter: brightness(0.8);
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.3);
+        }
+
+        /* Notify 激活状态样式 */
+        .btn-notify-active {
+            background: #ff00ad !important; /* 更亮的粉色 */
+            box-shadow: 0 0 10px rgba(208, 53, 146, 0.5);
+            border: 1px solid #fff !important;
+        }
+
+        /* 针对不同 GATT 操作的点击反馈 */
+        .btn-gatt:active {
+            background: #a371f7 !important;
+        }
+
+        /* 修改右侧列表的网格布局，增加 Role 和 Ch 列 */
+        .ws-header, .ws-row { 
+            display: grid; 
+            /* No. (40px), Time (70px), Role (50px), Ch (40px), Proto (55px), Info (1fr) */
+            grid-template-columns: 40px 70px 50px 40px 55px 1fr; 
+            font-size: 11px; 
+        }
+
+        /* 为不同角色添加标签颜色 */
+        .role-m { color: #58a6ff; font-weight: bold; } /* Master: 蓝色 */
+        .role-s { color: #ff7b72; font-weight: bold; } /* Slave: 红色 */
+    </style>
+</head>
+<body>
+
+<div class="app-container">
+    <div class="sidebar">
+        <div class="control-panel">
+            <h3>控制台 <span id="timerTxt" style="font-family:monospace; color:#7ee787">0.00s</span></h3>
+            <div class="control-group">
+                <label>视图模式</label>
+                <select id="runMode" onchange="resetSim()">
+                    <option value="scroll">实时 (2s)</option>
+                    <option value="fixed">全景 (30s)</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label>倍速 <span id="speedVal">1.0x</span></label>
+                <input type="range" id="simSpeed" min="0.01" max="1" step="0.01" value="0.1" oninput="updateUI()">
+            </div>
+            <div class="section-title">物理层 / 链路层参数</div>
+            <div class="control-group">
+                <label>广播间隔 <span id="advVal">100ms</span></label>
+                <input type="range" id="advInt" min="20" max="1000" step="10" value="100" oninput="updateUI()">
+            </div>
+            <div class="control-group">
+                <label>连接间隔 <span id="connVal">100ms</span></label>
+                <input type="range" id="connInt" min="7.5" max="500" step="1.25" value="100" oninput="updateUI()">
+            </div>
+            <div class="control-group">
+                <label>信号强度 <span id="rssiVal">-50 dBm</span></label>
+                <input type="range" id="rssiRange" min="-100" max="-30" value="-50" oninput="sim.rssi = this.value; updateUI()">
+            </div>
+            
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 5px;">
+                <button class="btn btn-start" onclick="resetSim(); startSim();">运行</button>
+                <button id="btnPause" class="btn btn-pause" onclick="togglePause()" disabled>暂停</button>
+            </div>
+            <button id="btnConn" class="btn btn-conn" onclick="triggerConnect()" disabled style="margin-top:10px">连接设备 (CONNECT_IND)</button>
+            <div class="section-title">GATT 操作</div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 5px;">
+                <button id="btnRead" class="btn btn-gatt" onclick="triggerGATT('READ')" disabled>Read Request</button>
+                <button id="btnWrite" class="btn btn-gatt" onclick="triggerGATT('WRITE')" disabled>Write Request</button>
+            </div>
+            <button id="btnNotify" class="btn btn-gatt" onclick="toggleNotify()" disabled style="background:#d03592">Toggle Notify (Handle 0x0012)</button>
+        </div>
+
+        <div class="detail-panel">
+            <h3>Packet Detail (BLE 5.0)</h3>
+            <div id="detailContent">
+                <div style="color:#8b949e; font-size:11px; text-align:center; margin-top:20px;">请选择一个数据包</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="main-charts">
+        <div class="chart-container-flex">
+            <div class="chart-zone">
+                <h3 style="border:none; margin-bottom:5px; font-size:11px; padding: 10px 0 0 10px;">
+                    Physical Layer Slots (Channel vs Time) 
+                </h3>
+                <div id="channelMapRow" style="display: flex; align-items: center; gap: 5px; padding: 0 10px 5px 10px; background: var(--panel);">
+                    <span style="font-size: 10px; color: #8b949e;">LL Channel Map:</span>
+                    <div id="mapBits" style="display: flex; gap: 1px; align-items: center;">
+                        </div>
+                    <span style="font-size: 9px; color: #8b949e; margin-left: 10px;">(点击左侧编号屏蔽坏信道)</span>
+                </div>
+
+                <div style="display: flex; flex: 1; position: relative; overflow: hidden;">
+                    <div id="channelGrid" style="width: 45px; display: flex; flex-direction: column; background: #010409; border-right: 1px solid var(--line); padding: 25px 0 15px 0;"></div>
+                    <canvas id="mainCanvas"></canvas>
+                </div>
+            </div>
+            <div class="sequence-zone">
+                <h3 style="border:none; margin-bottom:5px; font-size:11px; padding: 10px 0 0 10px;">Live Traffic Flow</h3>
+                <canvas id="seqCanvas"></canvas>
+            </div>
+        </div>
+        <div class="rssi-chart-zone"><canvas id="rssiCanvas"></canvas></div>
+    </div>
+
+    <div class="wireshark-zone">
+        <div class="ws-header">
+            <div>No.</div>
+            <div>Time</div>
+            <div>Role</div>
+            <div>Ch</div>
+            <div>Proto</div>
+            <div>Info</div>
+        </div>
+        <div class="ws-body" id="wsBody"></div>
+    </div>
+</div>
+
+<script>
+const seqCanvas = document.getElementById('seqCanvas');
+const seqCtx = seqCanvas.getContext('2d');
+const canvas = document.getElementById('mainCanvas');
+const ctx = canvas.getContext('2d');
+const rssiCanvas = document.getElementById('rssiCanvas');
+const rssiCtx = rssiCanvas.getContext('2d');
+const wsBody = document.getElementById('wsBody');
+
+let slaveX = 40;
+let masterX = 240;
+const yMap = {
+    'ADV': 40,
+    'SCAN': 60,
+    'LL': 80,
+    'ATT': 120,
+    'NOTIFY': 160
+};
+
+let sim = { 
+    active: false, paused: false, time: 0, state: 'IDLE', events: [], 
+    lastAdv: 0, lastConn: 0, ch: 37, pktIdx: 0, queue: [],
+    notifyEnabled: false, rssi: -50,
+    rssiHistory: [], rssiHistoryMaxLen: 600,
+    packetDataMap: new Map(),
+    consecutiveLoss: 0, // 连续丢包次数
+    maxLossThreshold: 6, // 允许的最大连续丢包次数（模拟超时）
+
+    badChannels: new Set(), // 存储屏蔽的信道号
+    hopIncrement: 7,        // 跳频增量
+};
+
+let simLoopId = null; // 用于显式控制循环的取消
+let anims = []; // 存储当前正在移动的标签 {type, fromX, toX, progress, color}
+
+function updateUI() {
+    document.getElementById('speedVal').innerText = document.getElementById('simSpeed').value + 'x';
+    document.getElementById('advVal').innerText = document.getElementById('advInt').value + 'ms';
+    document.getElementById('connVal').innerText = document.getElementById('connInt').value + 'ms';
+    document.getElementById('rssiVal').innerText = sim.rssi + ' dBm';
+}
+
+function togglePause() {
+    sim.paused = !sim.paused;
+    const btn = document.getElementById('btnPause');
+    btn.innerText = sim.paused ? "继续" : "暂停";
+    btn.classList.toggle('paused');
+}
+
+// 初始化信道编辑器
+function initChannelGrid() {
+    const grid = document.getElementById('channelGrid');
+    grid.innerHTML = ''; 
+    
+    // 这里的顺序必须与 draw() 函数中的纵轴绘制逻辑严格一致
+    // 逻辑：39, 38, 37, (间隔), 36, 35 ... 0
+    const channelOrder = [39, 38, 37, 'gap', ...Array.from({length: 37}, (_, i) => 36 - i)];
+
+    channelOrder.forEach(ch => {
+        if (ch === 'gap') {
+            const gap = document.createElement('div');
+            gap.style.height = '10px'; // 对应 draw() 中的 +10 偏移
+            grid.appendChild(gap);
+            return;
+        }
+
+        const btn = document.createElement('div');
+        // 样式适配：使其高度正好填满 Canvas 对应的行高
+        btn.style = `
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Consolas', monospace;
+            font-size: 9px;
+            cursor: pointer;
+            border-bottom: 1px solid #1a1a1a;
+            color: #8b949e;
+            transition: 0.2s;
+            background: #23863622; /* 默认浅绿背景 */
+        `;
+        btn.innerText = 'Ch' + ch;
+        if (ch >= 37) btn.style.color = '#ff7b72'; // 广播信道文字颜色
+
+        btn.onclick = () => {
+            if (sim.badChannels.has(ch)) {
+                sim.badChannels.delete(ch);
+                btn.style.background = "#23863622";
+                btn.style.color = ch >= 37 ? '#ff7b72' : '#8b949e';
+            } else {
+                sim.badChannels.add(ch);
+                btn.style.background = "#da3633"; // 屏蔽色
+                btn.style.color = "#fff";
+            }
+
+            // 触发更新
+            updateMapDisplay();
+            // 只有在数据信道 (0-36) 改变且处于连接状态时才发协议包
+            if (sim.state === 'CONNECTED' && ch < 37) {
+                sendChannelMapUpdate();
+            }
+        };
+        grid.appendChild(btn);
+    });
+}
+
+// 跳频计算
+function getNextChannel(currentCh, hop) {
+    // 1. 标准跳频公式: f_n+1 = (f_n + hop) mod 37
+    let unmappedCh = (currentCh + hop) % 37;
+
+    // 2. 检查该信道是否在坏信道列表中
+    if (!sim.badChannels.has(unmappedCh)) {
+        return unmappedCh;
+    } else {
+        // 3. 如果是坏信道，根据 BLE 规范，需要映射到可用信道表 (Used Channel Table)
+        let availableChannels = [];
+        for (let i = 0; i <= 36; i++) {
+            if (!sim.badChannels.has(i)) availableChannels.push(i);
+        }
+        
+        // 如果用户把 0-36 全屏蔽了，保底返回原信道避免崩溃
+        if (availableChannels.length === 0) return unmappedCh; 
+        
+        // 映射算法：取余数从可用列表中选择
+        return availableChannels[unmappedCh % availableChannels.length];
+    }
+}
+
+// 更新 UI 上的位图显示
+function updateMapDisplay() {
+    const container = document.getElementById('mapBits');
+    if (!container) return; // 防御性检查：如果元素不存在则跳过执行
+
+    container.innerHTML = '';
+    for (let i = 0; i <= 36; i++) {
+        const bit = document.createElement('div');
+        const isUsed = !sim.badChannels.has(i);
+        bit.style = `
+            width: 6px; 
+            height: 10px; 
+            background: ${isUsed ? '#238636' : '#da3633'}; 
+            border-radius: 1px;
+            transition: background 0.2s;
+        `;
+        bit.title = `Ch ${i}: ${isUsed ? 'Good' : 'Bad'}`;
+        container.appendChild(bit);
+    }
+}
+
+// 模拟发送 LL 控制信令
+function sendChannelMapUpdate() {
+    if (sim.state !== 'CONNECTED') return;
+
+    // 1. 生成 Channel Map 字节 (5 bytes)
+    let mapHex = "";
+    for(let byte=0; byte<5; byte++) {
+        let b = 0;
+        for(let bit=0; bit<8; bit++) {
+            let ch = byte * 8 + bit;
+            if (ch <= 36 && !sim.badChannels.has(ch)) b |= (1 << bit);
+        }
+        mapHex += b.toString(16).toUpperCase().padStart(2, '0') + " ";
+    }
+
+    // 2. 插入 Wireshark 列表
+    addWs('LL', `Control: LL_CHANNEL_MAP_IND (Map: 0x${mapHex.trim()})`, 'proto-ll', 'M', true);
+    
+    // 3. 视觉反馈：更新顶部位图
+    updateMapDisplay();
+}
+
+// 模拟 BLE 5.0 协议栈 Hex 生成
+function generateBle5Hex(proto, info) {
+    let bytes = [];
+    if (proto === 'ADV') {
+        bytes.push(0x00, 0x1E); // Header: Type 0 (ADV_IND), Len 30
+        bytes.push(0x45, 0x12, 0x66, 0x21, 0xFF, 0xD1); // AdvA (MAC)
+        bytes.push(0x02, 0x01, 0x06); // AD Structure 1: Flags
+        bytes.push(0x0B, 0x09, 0x47, 0x65, 0x6D, 0x69, 0x6E, 0x69, 0x2D, 0x35, 0x2E, 0x30); // Name: Gemini-5.0
+    } else if (proto === 'ATT' || proto === 'NOTIFY') {
+        // Link Layer Header (LLID=2 (Data Start), Len=varies)
+        bytes.push(0x02, 0x00); // Len 占位
+        // L2CAP Header (CID=0x0004 for ATT)
+        bytes.push(0x00, 0x00, 0x04, 0x00); // Len 占位
+        
+        let attPdu = [];
+        if (info.includes('MTU')) attPdu.push(0x02, 0xF7, 0x00); // Exchange MTU Request (MTU=247)
+        else if (info.includes('Discovery Service')) attPdu.push(0x10, 0x01, 0x00, 0xFF, 0xFF, 0x00, 0x28); // Read By Group Type (Primary Service)
+        else if (info.includes('Discovery Char')) attPdu.push(0x08, 0x01, 0x00, 0xFF, 0xFF, 0x03, 0x28); // Read By Type (Characteristic)
+        else if (info.includes('Read Request')) attPdu.push(0x0A, 0x12, 0x00); // Read Request, Handle 0x0012
+        else if (info.includes('Write Request')) attPdu.push(0x12, 0x15, 0x00, 0x01, 0x02); // Write Request, Handle 0x0015, Val 0x0102
+        else if (info.includes('Notification')) attPdu.push(0x1B, 0x12, 0x00, Math.floor(Math.random()*255)); // Handle Value Notification
+        else if (info.includes('Response')) attPdu.push(0x01, 0x08, 0x12, 0x00, 0x00); // Error/General Response
+        
+        // 修正 L2CAP 和 LL 长度
+        bytes[3] = attPdu.length; 
+        bytes[1] = attPdu.length + 4;
+        bytes = bytes.concat(attPdu);
+    } else if (proto === 'LL') {
+        if (info.includes('CONNECT')) {
+            bytes.push(0x05, 0x22); // LLID=1, Type=CONNECT_IND
+            bytes.push(0xAA, 0xBB, 0xCC, 0xDD); // Access Address
+            bytes.push(0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09); // Conn Interval, Latency, Timeout...
+        } else {
+            bytes.push(0x01, 0x00); // LL Empty PDU
+        }
+    }
+    return bytes.map(b => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+}
+
+function showDetail(id) {
+    const data = sim.packetDataMap.get(id);
+    if(!data) return;
+    document.querySelectorAll('.ws-row').forEach(r => r.classList.remove('selected'));
+    document.getElementById(`row-${id}`).classList.add('selected');
+
+    let detailHtml = `<div class="hex-dump">${data.hex}</div>`;
+    
+    if (data.proto === 'ADV') {
+        detailHtml += `
+            <div class="section-title">Link Layer (Advertising)</div>
+            <div class="field-item"><span class="field-label">PDU Type:</span><span class="field-val">ADV_IND (0x00)</span></div>
+            <div class="field-item"><span class="field-label">Adv Address:</span><span class="field-val">D1:FF:21:66:12:45</span></div>
+            <div class="section-title">Data Structures (AD)</div>
+            <div class="field-item"><span class="field-label">Flags:</span><span class="field-val">0x06 (LE General Disc, BR/EDR Not Supp)</span></div>
+            <div class="field-item"><span class="field-label">Complete Local Name:</span><span class="field-val">Gemini-5.0</span></div>
+        `;
+    } else if (data.proto === 'ATT' || data.proto === 'NOTIFY') {
+        const opcode = data.hex.split(' ').slice(6, 7)[0];
+        detailHtml += `
+            <div class="section-title">Link Layer (Data)</div>
+            <div class="field-item"><span class="field-label">LLID:</span><span class="field-val">Data Start (0x02)</span></div>
+            <div class="section-title">L2CAP Layer (Connectionless)</div>
+            <div class="field-item"><span class="field-label">Channel ID:</span><span class="field-val">Attribute Protocol (0x0004)</span></div>
+            <div class="section-title">Attribute Protocol (GATT)</div>
+            <div class="field-item"><span class="field-label">Opcode:</span><span class="field-val">0x${opcode} (${data.info})</span></div>
+        `;
+        if (data.info.includes('MTU')) {
+            detailHtml += `<div class="field-item"><span class="field-label">Client Rx MTU:</span><span class="field-val">247</span></div>`;
+        } else if (data.info.includes('Discovery')) {
+            detailHtml += `<div class="field-item"><span class="field-label">Start Handle:</span><span class="field-val">0x0001</span></div>
+                           <div class="field-item"><span class="field-label">End Handle:</span><span class="field-val">0xFFFF</span></div>`;
+        } else if (data.hex.split(' ').length > 8) {
+            detailHtml += `<div class="field-item"><span class="field-label">Attribute Handle:</span><span class="field-val">0x${data.hex.split(' ').slice(8,9)}${data.hex.split(' ').slice(7,8)}</span></div>`;
+        }
+    } else {
+        detailHtml += `<div class="section-title">Link Layer Control</div>
+                       <div class="field-item"><span class="field-label">Control Opcode:</span><span class="field-val">${data.info}</span></div>`;
+    }
+    
+
+    const statusHtml = data.isError ? 
+        `<span style="color:#ff7b72; font-weight:bold;">FAILED (CRC Mismatch)</span>` : 
+        `<span style="color:#7ee787;">OK</span>`;
+
+    detailHtml += `
+        <div class="section-title">Packet Metadata</div>
+        <div class="field-item"><span class="field-label">Role:</span><span class="field-val">${data.role === 'M' ? 'Master (Scanner/Central)' : 'Slave (Advertiser/Peripheral)'}</span></div>
+        <div class="field-item"><span class="field-label">Channel:</span><span class="field-val">${data.ch} (${(2402 + (data.ch <= 10 ? data.ch * 2 : (data.ch <= 36 ? (data.ch - 11) * 2 + 2 : (data.ch === 37 ? 0 : (data.ch === 38 ? 24 : 78))))) } MHz)</span></div>
+        <div class="field-item"><span class="field-label">CRC Check:</span><span class="field-val">${statusHtml}</span></div>
+        <div class="field-item"><span class="field-label">RSSI:</span><span class="field-val">${data.rssi} dBm</span></div>
+    `;
+
+    document.getElementById('detailContent').innerHTML = detailHtml;
+}
+
+function addWs(proto, info, cls, role, forceSuccess = false) {
+    // --- 核心：基于 RSSI 的 CRC 错误概率模型 ---
+    let rssiVal = parseFloat(sim.rssi);
+    let errorProb = 0;
+    
+    if (rssiVal < -75) {
+        // 当信号低于 -75dBm 时，错误率开始按指数级上升
+        // 公式：在 -95dBm 时概率接近 0.8
+        errorProb = Math.min(0.95, Math.pow((Math.abs(rssiVal) - 75) / 25, 2));
+    }
+
+    sim.pktIdx++;
+    const id = sim.pktIdx;
+    const isError = !forceSuccess && Math.random() < errorProb;
+
+    // 生成数据包 Hex (如果是错误包，随机篡改最后一个字节模拟 CRC 错误)
+    let hexData = generateBle5Hex(proto, info);
+    if (isError) {
+        let parts = hexData.split(' ');
+        parts[parts.length - 1] = '??'; // 模拟 CRC 校验未通过
+        hexData = parts.join(' ');
+    }
+
+    sim.packetDataMap.set(id, { 
+        proto, info, role, 
+        hex: hexData, 
+        ch: sim.ch, 
+        rssi: sim.rssi,
+        isError: isError
+    });
+
+    const row = document.createElement('div');
+    row.id = `row-${id}`;
+    row.onclick = () => showDetail(id);
+
+    // 格式化角色显示
+    const roleTag = role === 'M' ? '<span class="role-m">M</span>' : '<span class="role-s">S</span>';
+    const timeStr = (sim.time / 1000).toFixed(6);
+
+    if (isError) {
+        // 渲染错误样式：深红色背景，显示 CRC 错误标识
+        row.className = `ws-row`;
+        row.style.background = '#ffdce0'; // 淡红背景
+        row.style.color = '#a40e26';      // 深红文字
+        row.innerHTML = `
+            <div>${id}</div><div>${timeStr}</div><div>${roleTag}</div>
+            <div>${sim.ch}</div><div>${proto}</div>
+            <div style="font-weight:bold">⚠ [CRC Error] ${info}</div>`;
+    } else {
+        row.className = `ws-row ${cls}`;
+        row.innerHTML = `<div>${id}</div><div>${timeStr}</div><div>${roleTag}</div><div>${sim.ch}</div><div>${proto}</div><div>${info}</div>`;
+    }
+
+    wsBody.appendChild(row);
+    wsBody.scrollTop = wsBody.scrollHeight;
+
+    // 只有非错误包才触发信号流动画（模拟底层丢弃了错误包）
+    if (!isError) {
+        const isM = (role === 'M');
+        anims.push({
+            type: proto,
+            sX: isM ? masterX : slaveX, 
+            eX: isM ? slaveX : masterX,
+            progress: 0,
+            color: proto === 'ADV' ? '#FF5252' : (proto === 'ATT' ? '#E040FB' : (proto === 'NOTIFY' ? '#d03592' : '#40C4FF'))
+        });
+    }
+
+    return !isError; 
+}
+
+function resetSim() {
+    // 1. 彻底取消之前的动画帧，防止多个 loop 并行
+    if (simLoopId) {
+        cancelAnimationFrame(simLoopId);
+        simLoopId = null;
+    }
+
+    sim.active = false; sim.running = false; sim.paused = false; sim.time = 0; sim.events = []; sim.pktIdx = 0; 
+    sim.state = 'IDLE'; sim.queue = []; sim.rssiHistory = []; sim.packetDataMap.clear();
+    sim.lastAdv = 0; sim.lastConn = 0;
+    wsBody.innerHTML = '';
+    document.getElementById('btnPause').innerText = "暂停";
+    document.getElementById('btnPause').classList.remove('paused');
+    document.getElementById('detailContent').innerHTML = '<div style="color:#8b949e; font-size:11px; text-align:center; margin-top:20px;">请选择一个数据包</div>';
+    document.querySelectorAll('.btn').forEach(b => b.disabled = true);
+    document.querySelector('.btn-start').disabled = false;
+    draw();
+}
+
+function startSim() {
+    if (sim.running) return; // 如果已经在运行，直接返回，防止叠加
+    sim.active = true; 
+    sim.running = true; // 标记循环已启动
+    sim.state = 'ADV';
+    document.getElementById('btnConn').disabled = false;
+    document.getElementById('btnPause').disabled = false;
+    simLoopId = requestAnimationFrame(loop);
+}
+
+function triggerConnect() { sim.state = 'SCAN'; document.getElementById('btnConn').disabled = true; }
+function triggerGATT(type) {
+    sim.queue.push(type);
+    // 这里可以添加短暂的 UI 闪烁逻辑（可选）
+    console.log(`GATT ${type} added to queue`);
+}
+function toggleNotify() {
+    sim.notifyEnabled = !sim.notifyEnabled;
+    const btn = document.getElementById('btnNotify');
+    
+    if (sim.notifyEnabled) {
+        btn.classList.add('btn-notify-active');
+        btn.innerText = "Notify: ON (Handle 0x0012)";
+    } else {
+        btn.classList.remove('btn-notify-active');
+        btn.innerText = "Toggle Notify (Handle 0x0012)";
+    }
+}
+
+function loop() {
+    if (!sim.active) {
+        sim.running = false; // 确保退出时释放锁
+        return;
+    }
+    if (!sim.paused) {
+        const speed = parseFloat(document.getElementById('simSpeed').value);
+        const advInt = parseFloat(document.getElementById('advInt').value);
+        const connInt = parseFloat(document.getElementById('connInt').value);
+        const targetTime = sim.time + (1000 / 60) * speed;
+
+        while (sim.time < targetTime) {
+            sim.time += 1.0; 
+            if (Math.floor(sim.time) % 50 === 0) sim.rssiHistory.push({ t: sim.time, rssi: parseFloat(sim.rssi) });
+            if (sim.rssiHistory.length > sim.rssiHistoryMaxLen) sim.rssiHistory.shift();
+
+            if (sim.state === 'ADV' && sim.time - sim.lastAdv >= advInt) {
+                let anyAdvSent = false;
+                
+                // 遍历三个广播信道
+                [37, 38, 39].forEach(c => {
+                    // 如果该信道没被屏蔽，才生成物理事件
+                    if (!sim.badChannels.has(c)) {
+                        sim.events.push({ t: sim.time, ch: c, role: 'S', type: 'ADV' });
+                        anyAdvSent = true;
+                    }
+                });
+
+                // 只有当至少有一个广播信道可用时，Wireshark 列表才会显示成功收包
+                // 如果三个全屏了，addWs 的 forceSuccess 参数设为 false，让其进入随机丢包/错误逻辑
+                if (anyAdvSent) {
+                    // 更新：这里我们将 ch 设置为最后一个成功的广播信道用于显示
+                    sim.ch = [37, 38, 39].filter(c => !sim.badChannels.has(c)).pop();
+                    addWs('ADV', 'ADV_IND', 'proto-adv', 'S', true); 
+                } else {
+                    // 如果全屏蔽了，模拟完全没收到包，或者显示一个 CRC 错误包
+                    sim.ch = 37; // 默认显示在 37 
+                    addWs('ADV', 'ADV_IND (Interfered)', 'proto-adv', 'S', false); 
+                }
+                
+                sim.lastAdv = sim.time;
+            } else if (sim.state === 'SCAN') {
+                if (sim.badChannels.has(37)) {
+                    // 如果 Ch37 被屏蔽，连接请求发送失败
+                    addWs('LL', 'CONNECT_IND (Blocked)', 'proto-ll', 'M', false);
+                    sim.state = 'ADV'; // 退回广播状态
+                    document.getElementById('btnConn').disabled = false; // 重新启用按钮
+                } else {
+                    sim.events.push({ t: sim.time, ch: 37, role: 'M', type: 'SCAN' });
+                    addWs('ADV', 'SCAN_REQ', 'proto-adv', 'M', true); 
+                    sim.state = 'INIT_CONN';
+                }
+            } else if (sim.state === 'INIT_CONN') {
+                addWs('LL', 'CONNECT_IND', 'proto-ll', 'M', true);
+                // 自动插入服务发现队列
+                sim.queue.push('MTU_REQ', 'DISC_SVC', 'DISC_CHAR'); 
+                sim.state = 'CONNECTED'; sim.lastConn = sim.time;
+            } else if (sim.state === 'CONNECTED' && sim.time - sim.lastConn >= connInt) {
+                sim.lastConn = sim.time; 
+                sim.ch = getNextChannel(sim.ch, sim.hopIncrement);
+
+                let job = sim.queue[0];
+                
+                // --- 第一步：Master 发送 (REQ 或 EMPTY) ---
+                let mProto = job ? 'ATT' : 'LL';
+                let mInfo = job ? 
+                    ((job === 'MTU_REQ') ? 'Exchange MTU Request' : 
+                     (job === 'DISC_SVC') ? 'Read By Group Type Req' : 
+                     (job === 'DISC_CHAR') ? 'Read By Type Req' : 
+                     (job === 'READ') ? 'Read Request' : 'Write Request') : 
+                    'Empty PDU';
+
+                // --- Master 发包 ---
+                sim.events.push({ t: sim.time, ch: sim.ch, role: 'M', type: mProto });
+                let mSuccess = addWs(mProto, mInfo, (mProto==='ATT'?'proto-att':'proto-ll'), 'M');
+
+                // --- 第二步：Slave 响应 (RSP 或 EMPTY) ---
+                // 模拟 T_IFS (非常短的时间偏移)
+                const t_ifs = 1.25; // 模拟 1.25ms 后响应
+                
+                let sSuccess = false;
+                if (mSuccess) { // 只有 Master 发送成功且被 Slave 接收，Slave 才会回包
+                    // --- Slave 响应 ---
+                    let sProto = job ? 'ATT' : 'LL';
+                    let sInfo = job ? mInfo.replace('Req', 'Response') : 'Empty PDU';
+                    
+                    // 特殊处理：如果是 Notify，Slave 在这个 Connection Event 中主动推送数据
+                    if (sim.notifyEnabled && !job) {
+                        sProto = 'NOTIFY';
+                        sInfo = 'Handle Value Notification';
+                    }
+
+                    sim.events.push({ t: sim.time + t_ifs, ch: sim.ch, role: 'S', type: sProto });
+                    sSuccess = addWs(sProto, sInfo, (sProto==='ATT'?'proto-att':'proto-notify'), 'S');
+                    
+                    // 如果处理了任务，则出队
+                    if (job) sim.queue.shift();
+                    
+                    // 发现完成后激活功能按钮
+                    if (sim.queue.length === 0) {
+                        ["btnRead","btnWrite","btnNotify"].forEach(id => document.getElementById(id).disabled=false);
+                    }
+                }
+
+                // --- 超时监控核心逻辑 ---
+                if (!mSuccess || !sSuccess) {
+                    sim.consecutiveLoss++;
+                    console.warn(`Connection Packet Lost! Count: ${sim.consecutiveLoss}`);
+                } else {
+                    sim.consecutiveLoss = 0; // 只要有一对包成功收发，重置计数器
+                }
+
+                // 如果连续丢包超过阈值
+                if (sim.consecutiveLoss >= sim.maxLossThreshold) {
+                    triggerTimeout();
+                }
+            }
+        }
+    }
+    draw();
+    document.getElementById('timerTxt').innerText = (sim.time / 1000).toFixed(2) + 's';
+    simLoopId = requestAnimationFrame(loop);
+
+    // 改变标题
+    const mainTitle = document.querySelector('.chart-zone h3');
+    if (sim.state === 'ADV') {
+        mainTitle.innerHTML = 'Physical Layer Slots <span style="color:#FF5252; font-size:9px;">[ADVERTISING]</span>';
+    } else if (sim.state === 'CONNECTED') {
+        mainTitle.innerHTML = 'Physical Layer Slots <span style="color:#40C4FF; font-size:9px;">[CONNECTED - HOPPING]</span>';
+    }
+}
+
+function draw() {
+    const dpr = window.devicePixelRatio || 1;
+    const mode = document.getElementById('runMode').value;
+    const viewMs = mode === 'scroll' ? 2000 : 30000;
+    const xOff = mode === 'scroll' ? Math.max(0, sim.time - viewMs) : 0;
+
+    [canvas, rssiCanvas, seqCanvas].forEach(c => {
+        if (c.width !== c.offsetWidth * dpr) { c.width = c.offsetWidth * dpr; c.height = c.offsetHeight * dpr; }
+    });
+
+    // --- 1. 物理层时隙图 ---
+    ctx.save(); 
+    ctx.scale(dpr, dpr);
+    const w = canvas.offsetWidth, h = canvas.offsetHeight;
+
+    // 背景颜色
+    ctx.fillStyle = '#050505'; 
+    ctx.fillRect(0, 0, w, h);
+
+    const paddingLeft = 5; // 为左侧信道号预留空间
+    const chH = (h - 60) / 40; // 每个信道的高度
+    const pxMs = (w - paddingLeft - 10) / viewMs;
+
+    // --- 绘制纵轴背景与刻度 ---
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.font = '9px Consolas';
+
+    for (let i = 0; i <= 39; i++) {
+        // 计算 Y 坐标逻辑：37-39 在最上方，0-36 在下方
+        let y = (i >= 37) ? 25 + (39 - i) * chH : 25 + (36 - i) * chH + (chH * 3) + 10;
+        
+        // 绘制横向网格线 (弱化显示)
+        ctx.strokeStyle = '#1a1a1a';
+        ctx.beginPath();
+        ctx.moveTo(paddingLeft, y + chH/2);
+        ctx.lineTo(w, y + chH/2);
+        ctx.stroke();
+
+        // 绘制信道文本
+        for (let i = 0; i <= 39; i++) {
+            let y = (i >= 37) ? 25 + (39 - i) * chH : 25 + (36 - i) * chH + (chH * 3) + 10;
+            
+            // 仅保留背景横线
+            ctx.strokeStyle = '#1a1a1a';
+            ctx.beginPath();
+            ctx.moveTo(paddingLeft, y + chH/2);
+            ctx.lineTo(w, y + chH/2);
+            ctx.stroke();
+
+            // 删掉 ctx.fillText(...) 相关代码
+        }
+    }
+
+    // --- [新插入：坏信道背景阴影] ---
+    // 放在这里可以确保阴影在数据包小方块的“下面”
+    sim.badChannels.forEach(ch => {
+        let y = (ch >= 37) ? 25 + (39 - ch) * chH : 25 + (36 - ch) * chH + (chH * 3) + 10;
+        ctx.fillStyle = 'rgba(218, 54, 51, 0.25)'; // 稍微加深一点透明红，效果更好
+        ctx.fillRect(paddingLeft, y, w, chH);
+    });
+
+    // 绘制广播/数据区域分隔线
+    ctx.strokeStyle = '#30363d'; // 使用 CSS 变量对应的颜色或直接用 #30363d
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    ctx.moveTo(paddingLeft, 25 + 3 * chH + 5);
+    ctx.lineTo(w, 25 + 3 * chH + 5);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // --- 绘制事件点 ---
+    sim.events.filter(e => e.t >= xOff && e.t <= xOff + viewMs).forEach(e => {
+        let x = paddingLeft + (e.t - xOff) * pxMs;
+        // 使用与上面一致的坐标算法
+        let y = (e.ch >= 37) ? 25 + (39 - e.ch) * chH : 25 + (36 - e.ch) * chH + (chH * 3) + 10;
+        
+        ctx.fillStyle = e.type === 'ADV' ? '#FF5252' : (e.type === 'ATT' ? '#E040FB' : (e.type === 'NOTIFY' ? '#d03592' : '#40C4FF'));
+        
+        // 增加数据包宽度使其更可见
+        const rectW = Math.max(3, pxMs * 5); // 最小宽度3px
+        ctx.fillRect(x, (e.role === 'M' ? y + 1 : y + chH - 6), rectW, 5);
+    });
+
+    ctx.restore();
+
+    // --- 2. RSSI 趋势图 ---
+    rssiCtx.save(); rssiCtx.scale(dpr, dpr);
+    rssiCtx.fillStyle = '#050505'; rssiCtx.fillRect(0, 0, rssiCanvas.offsetWidth, rssiCanvas.offsetHeight);
+    rssiCtx.strokeStyle = '#40C4FF'; rssiCtx.lineWidth = 1.5; rssiCtx.beginPath();
+    sim.rssiHistory.filter(d => d.t >= xOff).forEach((d, i) => {
+        let x = 40 + (d.t - xOff) * ((rssiCanvas.offsetWidth - 50) / viewMs);
+        let y = 15 + (1 - (d.rssi + 100) / 70) * (rssiCanvas.offsetHeight - 30);
+        if(i === 0) rssiCtx.moveTo(x, y); else rssiCtx.lineTo(x, y);
+    });
+    rssiCtx.stroke(); rssiCtx.restore();
+
+    // --- 3. 信号流图 (Sequence Diagram) ---
+    seqCtx.save();
+    seqCtx.scale(dpr, dpr);
+    const sw = seqCanvas.offsetWidth, sh = seqCanvas.offsetHeight;
+    
+    // 动态更新坐标，防止画布缩放导致位置偏移
+    slaveX = 40;
+    masterX = sw - 40;
+
+    seqCtx.fillStyle = '#050505';
+    seqCtx.fillRect(0, 0, sw, sh);
+
+    // 绘制基线
+    seqCtx.strokeStyle = '#30363d';
+    seqCtx.lineWidth = 2;
+    seqCtx.beginPath();
+    seqCtx.moveTo(slaveX, 20); seqCtx.lineTo(slaveX, sh - 10);
+    seqCtx.moveTo(masterX, 20); seqCtx.lineTo(masterX, sh - 10);
+    seqCtx.stroke();
+
+    // 绘制角色图标
+    seqCtx.fillStyle = '#8b949e';
+    seqCtx.font = 'bold 10px Arial';
+    seqCtx.textAlign = 'center';
+    seqCtx.fillText('SLAVE', slaveX, 15);
+    seqCtx.fillText('MASTER', masterX, 15);
+
+    // 动画处理逻辑
+    const activeAnims = new Map();
+    // 获取当前倍速
+    const speed = parseFloat(document.getElementById('simSpeed').value);
+    anims.forEach((anim) => {
+        // 基础步长设为 0.04 (这是 1倍速下觉得舒服的速度)
+        // 直接乘以 speed，实现倍速同步
+        let delta = 1 * speed;
+
+        // 【重要】：防止高倍速下 delta 过大导致直接跳过动画
+        // 如果 delta 很大，说明包太多了，此时我们强制让它在 1-2 帧内闪过
+        anim.progress += Math.min(delta, 0.5); 
+        
+        // 使用 type + sX 作为 Key，确保同一方向的同类包在视觉上不重叠挤塞
+        activeAnims.set(anim.type + anim.sX, anim); 
+    });
+    anims = anims.filter(a => a.progress < 1);
+
+    activeAnims.forEach((anim) => {
+        // 修正：确保 anim.sX 和 anim.eX 使用的是最新的 masterX/slaveX
+        const currentSX = anim.sX === 40 ? slaveX : masterX;
+        const currentEX = anim.eX === 40 ? slaveX : masterX;
+        const currentX = currentSX + (currentEX - currentSX) * anim.progress;
+        
+        const isMtoS = currentSX > currentEX;
+        const baseY = yMap[anim.type] || 100;
+        const y = baseY + (isMtoS ? -5 : 5);
+
+        // 绘制虚线背景
+        seqCtx.setLineDash([2, 4]);
+        seqCtx.strokeStyle = '#21262d';
+        seqCtx.beginPath();
+        seqCtx.moveTo(slaveX, y); seqCtx.lineTo(masterX, y);
+        seqCtx.stroke();
+        seqCtx.setLineDash([]);
+
+        // 绘制标签容器
+        const labelW = 45;
+        seqCtx.fillStyle = anim.color;
+        // 兼容性修正：使用 rect 代替 roundRect
+        seqCtx.beginPath();
+        seqCtx.rect(currentX - labelW/2, y - 8, labelW, 16);
+        seqCtx.fill();
+
+        seqCtx.fillStyle = '#fff';
+        seqCtx.font = 'bold 9px Consolas';
+        seqCtx.textAlign = 'center';
+        const arrowSymbol = isMtoS ? " ←" : " →";
+        seqCtx.fillText(anim.type + arrowSymbol, currentX, y + 4);
+    });
+
+    seqCtx.restore();
+}
+
+// 辅助函数：绘制箭头
+function drawArrow(ctx, fromx, fromy, tox, toy) {
+    const headlen = 8;
+    const angle = Math.atan2(toy - fromy, tox - fromx);
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(fromx, fromy);
+    ctx.lineTo(tox, toy);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(tox, toy);
+    ctx.lineTo(tox - headlen * Math.cos(angle - Math.PI / 6), toy - headlen * Math.sin(angle - Math.PI / 6));
+    ctx.lineTo(tox - headlen * Math.cos(angle + Math.PI / 6), toy - headlen * Math.sin(angle + Math.PI / 6));
+    ctx.closePath();
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.fill();
+}
+
+function triggerTimeout() {
+    // 1. 在列表中插入一条醒目的断开信息
+    const id = ++sim.pktIdx;
+    const row = document.createElement('div');
+    row.className = `ws-row`;
+    row.style.background = '#ffdce0'; 
+    row.style.borderLeft = '4px solid #ff0000';
+    const timeStr = (sim.time / 1000).toFixed(6);
+    row.innerHTML = `<div>${id}</div><div>${timeStr}</div><div class="role-m">M/S</div><div>-</div><div style="color:red; font-weight:bold">LL</div><div style="color:red; font-weight:bold">☠ [TIMEOUT] Connection Terminated (Reason: 0x08)</div>`;
+    wsBody.appendChild(row);
+    wsBody.scrollTop = wsBody.scrollHeight;
+
+    // 2. 更新状态：回到广播状态
+    sim.state = 'ADV';
+    sim.consecutiveLoss = 0;
+    sim.queue = [];
+    
+    // 3. 禁用 GATT 按钮
+    ["btnRead","btnWrite","btnNotify"].forEach(id => document.getElementById(id).disabled = true);
+    document.getElementById('btnConn').disabled = false;
+    
+    // 4. 重置 Notify 按钮样式
+    sim.notifyEnabled = false;
+    const btnN = document.getElementById('btnNotify');
+    btnN.classList.remove('btn-notify-active');
+    btnN.innerText = "Toggle Notify (Handle 0x0012)";
+}
+
+window.onload = () => {
+    initChannelGrid();   // 1. 生成左侧按钮
+    updateMapDisplay();  // 2. 初始化位图（此时 DOM 肯定已存在）
+    updateUI();          // 3. 更新滑块数值
+    draw();              // 4. 执行首次绘制
+};
+</script>
+</body>
+</html>
